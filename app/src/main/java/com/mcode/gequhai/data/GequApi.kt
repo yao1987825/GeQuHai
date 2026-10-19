@@ -29,6 +29,23 @@ class GequApi {
         .followRedirects(true)
         .followSslRedirects(true)
         .retryOnConnectionFailure(true)
+        // 补全浏览器指纹, 防 m.gequba.com WAF 返 403
+        .addInterceptor { chain ->
+            val req = chain.request().newBuilder()
+                .header("User-Agent",      UA)
+                .header("Accept",          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+                // Accept-Encoding 让 OkHttp 自动加 + 自动解压 (不要再手动 header 避免重复)
+                .header("Sec-Fetch-Dest",  "document")
+                .header("Sec-Fetch-Mode",  "navigate")
+                .header("Sec-Fetch-Site",  "same-origin")
+                .header("Sec-Fetch-User",  "?1")
+                .header("Upgrade-Insecure-Requests", "1")
+                // Referer 按 host 自动匹配: 搜索页和播放页都用主域
+                .header("Referer", if (chain.request().url.host.endsWith("gequba.com")) BASE + "/" else chain.request().url.toString())
+                .build()
+            chain.proceed(req)
+        }
         .build()
 
     /** 搜索: 第 1 页到第 endPage 页 (含) */
@@ -76,17 +93,27 @@ class GequApi {
     // ---------------- 内部 ----------------
 
     private fun get(url: String): String {
-        val req = Request.Builder()
-            .url(url)
-            .header("User-Agent", UA)
-            .header("Referer", BASE)
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-            .header("Accept-Language", "zh-CN,zh;q=0.9")
-            .build()
-        http.newCall(req).execute().use { r ->
-            if (!r.isSuccessful) error("HTTP ${r.code} $url")
-            return r.body?.string() ?: error("empty body")
+        // header 全部由 OkHttp 拦截器统一补. 这里只放 URL.
+        var lastErr: Throwable? = null
+        for (attempt in 1..3) {
+            val req = Request.Builder().url(url).build()
+            try {
+                http.newCall(req).execute().use { r ->
+                    if (r.isSuccessful) return r.body?.string() ?: error("empty body")
+                    // 403/503 退避重试 (反爬偶发)
+                    if (r.code == 403 || r.code in 500..599) {
+                        lastErr = error("HTTP ${r.code} $url (attempt $attempt/3)")
+                        kotlinx.coroutines.delay(1000L * attempt)
+                        return@use
+                    }
+                    error("HTTP ${r.code} $url")
+                }
+            } catch (e: Throwable) {
+                lastErr = e
+                kotlinx.coroutines.delay(500L * attempt)
+            }
         }
+        throw lastErr ?: error("get failed: $url")
     }
 
     private fun parseSearchHtml(html: String): List<SearchItem> {
