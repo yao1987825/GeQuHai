@@ -9,6 +9,7 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.MoreExecutors
+import com.mcode.gequhai.data.LrcEntry
 import com.mcode.gequhai.data.SongMeta
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -44,6 +45,13 @@ object PlaybackController {
 
     private val _durationMs = MutableStateFlow(0L)
     val durationMs: StateFlow<Long> = _durationMs.asStateFlow()
+
+    // 歌词 + 当前行 (高亮)
+    private val _lrc = MutableStateFlow<List<LrcEntry>>(emptyList())
+    val lrc: StateFlow<List<LrcEntry>> = _lrc.asStateFlow()
+
+    private val _currentLrcIndex = MutableStateFlow(-1)
+    val currentLrcIndex: StateFlow<Int> = _currentLrcIndex.asStateFlow()
 
     fun bind(context: Context) {
         if (controller != null) return
@@ -207,7 +215,37 @@ object PlaybackController {
         controller?.let {
             _progressMs.value = it.currentPosition.coerceAtLeast(0)
             _durationMs.value = it.duration.coerceAtLeast(0)
+            updateCurrentLrcIndex(_progressMs.value)
         }
+    }
+
+    /** 设置当前歌曲的歌词 (由 UI 在拿到 lrc 文本后解析并传入) */
+    fun setLrc(entries: List<LrcEntry>) {
+        _lrc.value = entries
+        _currentLrcIndex.value = -1
+    }
+
+    /**
+     * 二分找当前 progress 对应的歌词行.
+     * 若 progress 还在第一行之前, 返回 -1.
+     */
+    private fun updateCurrentLrcIndex(progressMs: Long) {
+        val list = _lrc.value
+        if (list.isEmpty()) {
+            if (_currentLrcIndex.value != -1) _currentLrcIndex.value = -1
+            return
+        }
+        if (progressMs < list.first().start) {
+            if (_currentLrcIndex.value != -1) _currentLrcIndex.value = -1
+            return
+        }
+        // 找最右 start <= progressMs
+        var lo = 0; var hi = list.size - 1
+        while (lo < hi) {
+            val mid = (lo + hi + 1) / 2
+            if (list[mid].start <= progressMs) lo = mid else hi = mid - 1
+        }
+        if (_currentLrcIndex.value != lo) _currentLrcIndex.value = lo
     }
 }
 

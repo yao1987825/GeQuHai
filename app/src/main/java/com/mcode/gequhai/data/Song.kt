@@ -22,6 +22,8 @@ data class SongMeta(
     val duration: String,
     val mp3Type: Int,
     val mp3Url: String,
+    /** 原始 LRC 文本 (可能为空) */
+    val lrc: String? = null,
     val source: String = "m.gequba.com",
 )
 

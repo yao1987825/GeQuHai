@@ -1,10 +1,15 @@
 package com.mcode.gequhai.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -21,10 +26,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.mcode.gequhai.data.Downloader
+import com.mcode.gequhai.data.LrcParser
 import com.mcode.gequhai.player.PlaybackController
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,13 +46,27 @@ fun NowPlayingScreen(
     val durationMs by PlaybackController.durationMs.collectAsState()
     val queue by PlaybackController.queue.collectAsState()
     val queueIndex by PlaybackController.queueIndex.collectAsState()
+    val lrc by PlaybackController.lrc.collectAsState()
+    val currentLrcIndex by PlaybackController.currentLrcIndex.collectAsState()
     val scope = rememberCoroutineScope()
 
-    // 用户拖动进度条时, 暂停从 Player 拉进度, 避免覆盖用户的拖动值
     var isDragging by remember { mutableStateOf(false) }
     var dragValue by remember { mutableFloatStateOf(0f) }
+    var showLyrics by rememberSaveable { mutableStateOf(false) }
 
-    // 每秒刷新进度 (用户没在拖动时)
+    // 切歌时把 lrc 喂给 controller
+    LaunchedEffect(song?.mp3Id) {
+        val s = song
+        if (s != null) {
+            val entries = s.lrc?.let { LrcParser.parse(it) } ?: emptyList()
+            PlaybackController.setLrc(entries)
+            if (entries.isNotEmpty()) showLyrics = true
+        } else {
+            PlaybackController.setLrc(emptyList())
+        }
+    }
+
+    // 每秒刷新进度
     LaunchedEffect(Unit) {
         while (true) {
             if (!isDragging) PlaybackController.pollProgress()
@@ -63,30 +85,70 @@ fun NowPlayingScreen(
         Modifier.fillMaxSize().padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(Modifier.height(24.dp))
-        Box(
-            Modifier
-                .size(240.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
-            contentAlignment = Alignment.Center
-        ) {
-            if (s.cover.isNotBlank()) {
-                AsyncImage(
-                    model = s.cover,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            } else {
-                Icon(
-                    Icons.Default.MusicNote,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(96.dp)
-                )
-            }
-        }
         Spacer(Modifier.height(20.dp))
+
+        // cover 区域: cover 或 歌词, 点击切换
+        if (showLyrics && lrc.isNotEmpty()) {
+            LyricsView(
+                entries = lrc,
+                currentIndex = currentLrcIndex,
+                progressMs = progressMs,
+                onSeekTo = { ms -> PlaybackController.seekTo(ms) },
+                onSwitchToCover = { showLyrics = false },
+            )
+        } else {
+            Box(
+                Modifier
+                    .size(240.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                    .clickable {
+                        if (lrc.isNotEmpty()) showLyrics = true
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                if (s.cover.isNotBlank()) {
+                    AsyncImage(
+                        model = s.cover,
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    Icon(
+                        Icons.Default.MusicNote,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(96.dp)
+                    )
+                }
+                // 歌词提示角标
+                if (lrc.isNotEmpty()) {
+                    Box(
+                        Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(8.dp)
+                            .background(
+                                Color.Black.copy(alpha = 0.6f),
+                                RoundedCornerShape(20.dp)
+                            )
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Lyrics,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text("点按看词", color = Color.White, fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+
         Text(
             s.title,
             fontWeight = FontWeight.Bold,
@@ -102,7 +164,7 @@ fun NowPlayingScreen(
             overflow = TextOverflow.Ellipsis,
         )
         if (queue.isNotEmpty() && queueIndex >= 0) {
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(2.dp))
             Text(
                 "队列 ${queueIndex + 1} / ${queue.size}",
                 style = MaterialTheme.typography.bodySmall,
@@ -111,7 +173,6 @@ fun NowPlayingScreen(
         }
         Spacer(Modifier.height(8.dp))
 
-        // 进度条: onValueChange 只更新本地 dragValue; onValueChangeFinished 才 seekTo
         Slider(
             value = if (isDragging) dragValue else progressMs.toFloat(),
             onValueChange = {
@@ -129,8 +190,7 @@ fun NowPlayingScreen(
             Text(formatMs(durationMs), style = MaterialTheme.typography.bodySmall)
         }
 
-        Spacer(Modifier.height(16.dp))
-        // 控制按钮: 上一首 | 播放/暂停 | 下一首 + 下载
+        Spacer(Modifier.height(12.dp))
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(20.dp)
@@ -174,6 +234,83 @@ fun NowPlayingScreen(
                 modifier = Modifier.size(48.dp)
             ) {
                 Icon(Icons.Default.Download, contentDescription = "下载")
+            }
+        }
+    }
+}
+
+/**
+ * 滚动歌词视图.
+ * - 居中高亮当前行, 上方/下方稍小稍暗
+ * - 跟随播放进度自动滚动, 但只滚到"当前行 ± 0.5 屏"内, 不强制对齐顶部
+ * - 点击任意行 → seekTo 该行
+ */
+@Composable
+private fun LyricsView(
+    entries: List<com.mcode.gequhai.data.LrcEntry>,
+    currentIndex: Int,
+    progressMs: Long,
+    onSeekTo: (Long) -> Unit,
+    onSwitchToCover: () -> Unit,
+) {
+    val listState = rememberLazyListState()
+    // 自动滚动: 当前行尽量落在屏幕中间偏上
+    LaunchedEffect(currentIndex) {
+        if (currentIndex < 0) return@LaunchedEffect
+        // 第一行刚出现时别弹跳
+        if (currentIndex < 3) return@LaunchedEffect
+        listState.animateScrollToItem(
+            index = (currentIndex - 3).coerceAtLeast(0),
+            scrollOffset = 0
+        )
+    }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().padding(bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.Lyrics,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+            Text("歌词", style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onSwitchToCover) { Text("封面", fontSize = 12.sp) }
+        }
+        Box(
+            Modifier
+                .height(280.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+        ) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(vertical = 12.dp, horizontal = 8.dp)
+            ) {
+                itemsIndexed(entries, key = { _, e -> "${e.start}-${e.text.hashCode()}" }) { idx, e ->
+                    val isCurrent = idx == currentIndex
+                    val isPast = currentIndex >= 0 && idx < currentIndex
+                    Text(
+                        text = e.text,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSeekTo(e.start) }
+                            .padding(vertical = 6.dp, horizontal = 4.dp),
+                        textAlign = TextAlign.Center,
+                        fontSize = if (isCurrent) 17.sp else 14.sp,
+                        fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
+                        color = when {
+                            isCurrent -> MaterialTheme.colorScheme.primary
+                            isPast    -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                            else      -> MaterialTheme.colorScheme.onSurface
+                        }
+                    )
+                }
             }
         }
     }

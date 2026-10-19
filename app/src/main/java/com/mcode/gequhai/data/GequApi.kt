@@ -82,11 +82,12 @@ class GequApi(context: Context) {
     }
 
     /**
-     * 解析播放页, 拿到完整 SongMeta (含 mp3_url).
+     * 解析播放页, 拿到完整 SongMeta (含 mp3_url + 歌词).
      *
      * 流程:
      *   1) OkHttp 抓 HTML, 解析 window.appData JSON.parse('\u0022...') -> 静态字段
-     *   2) 若 mp3_url 字段为空 (服务端 HTML 静态版本不带此字段, plugin.js 才会注入)
+     *   2) 顺便从 HTML 抓 <div id="content-lrc">...</div> 当歌词原始文本
+     *   3) 若 mp3_url 字段为空 (服务端 HTML 静态版本不带此字段, plugin.js 才会注入)
      *      则用 WebView 加载播放页, 等 JS 跑完后从 window.appData.mp3_url 读取
      */
     suspend fun resolve(item: SearchItem): SongMeta = withContext(Dispatchers.IO) {
@@ -99,6 +100,7 @@ class GequApi(context: Context) {
         val jsonStr = unescapeUnicode(raw)
         val obj = JSONObject(jsonStr)
         val staticUrl = obj.optString("mp3_url")
+        val lrc = extractLrc(html)  // 尝试从 HTML 抓静态歌词
         val base = SongMeta(
             mp3Id     = obj.optString("mp3_id", item.hash),
             playId    = obj.optString("play_id"),
@@ -108,12 +110,26 @@ class GequApi(context: Context) {
             duration  = obj.optString("mp3_duration"),
             mp3Type   = obj.optInt("mp3_type"),
             mp3Url    = staticUrl,
+            lrc       = lrc,
         )
         if (staticUrl.isNotBlank()) return@withContext base
 
         // Fallback: WebView 加载, 等 plugin.js 跑完拿到 mp3_url
         val realUrl = withContext(Dispatchers.Main) { fetchMp3UrlViaWebView(item.detailUrl) }
         base.copy(mp3Url = realUrl)
+    }
+
+    /**
+     * 从播放页 HTML 里抓 <div id="content-lrc">...</div> 的内容,
+     * 把 <br /> 替换为 \n. 失败返回 null.
+     */
+    private fun extractLrc(html: String): String? {
+        val m = Regex("""<div[^>]*\bid=["']content-lrc["'][^>]*>([\s\S]*?)</div>""").find(html) ?: return null
+        val inner = m.groupValues[1]
+            .replace(Regex("""<br\s*/?>""", RegexOption.IGNORE_CASE), "\n")
+            .replace(Regex("""<[^>]+>"""), "")  // 去掉残余 html 标签
+            .trim()
+        return inner.takeIf { it.isNotBlank() && it.contains('[') }
     }
 
     // ---------------- 内部 ----------------
