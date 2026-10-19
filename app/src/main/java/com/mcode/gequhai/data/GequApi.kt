@@ -73,8 +73,12 @@ class GequApi {
     suspend fun resolve(item: SearchItem): SongMeta = withContext(Dispatchers.IO) {
         val html = get(item.detailUrl)
         val regex = Regex("""window\.appData\s*=\s*JSON\.parse\(\s*'([\s\S]*?)'\s*\)""")
-        val jsonStr = regex.find(html)?.groupValues?.get(1)
+        val raw = regex.find(html)?.groupValues?.get(1)
             ?: error("appData not found at ${item.detailUrl}")
+        // HTML 里这一行是 window.appData = JSON.parse('\u0022web_code\u0022:...')
+        // \u0022 是 JS 字符串里的 " 转义, 必须先反转义为字面字符,
+        // 否则 JSONObject 看到 { 后紧跟 \, 会报 "Expected property name or '}'"
+        val jsonStr = unescapeUnicode(raw)
         val obj = JSONObject(jsonStr)
         val mp3Url = obj.optString("mp3_url")
         if (mp3Url.isBlank()) error("mp3_url empty (web_code=${obj.optString("web_code")})")
@@ -140,6 +144,60 @@ class GequApi {
             )
         }
         return out
+    }
+
+    /**
+     * 把字符串里的 \uXXXX 反转义成真实字符 (BMP 范围).
+     * 处理 gequba.com 播放页 HTML 里 JSON.parse('\u0022...') 这种转义后的 JSON 串.
+     * 支持:
+     *   \u0022 -> "
+     *   \u7231 -> "爱"
+     *   \\     -> \     (转义的反斜杠)
+     *   \"     -> "     (转义的引号)
+     *   \n / \t / \r     原样保留
+     */
+    private fun unescapeUnicode(s: String): String {
+        val out = StringBuilder(s.length)
+        var i = 0
+        val n = s.length
+        while (i < n) {
+            val c = s[i]
+            if (c == '\\' && i + 1 < n) {
+                when (val nxt = s[i + 1]) {
+                    'u' -> {
+                        if (i + 5 < n) {
+                            val hex = s.substring(i + 2, i + 6)
+                            val code = hex.toIntOrNull(16)
+                            if (code != null) {
+                                out.append(code.toChar())
+                                i += 6
+                                continue
+                            }
+                        }
+                        out.append(c).append(nxt); i += 2
+                    }
+                    '\\', '"', '/', 'b', 'f', 'n', 'r', 't' -> {
+                        when (nxt) {
+                            '\\' -> out.append('\\')
+                            '"'  -> out.append('"')
+                            '/'  -> out.append('/')
+                            'b'  -> out.append('\b')
+                            'f'  -> out.append(12.toChar())  // form feed
+                            'n'  -> out.append('\n')
+                            'r'  -> out.append('\r')
+                            't'  -> out.append('\t')
+                        }
+                        i += 2
+                    }
+                    else -> {
+                        out.append(c); i++
+                    }
+                }
+            } else {
+                out.append(c); i++
+            }
+        }
+        return out.toString()
     }
 
     companion object {
