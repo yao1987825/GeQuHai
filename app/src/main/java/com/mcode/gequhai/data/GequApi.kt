@@ -156,12 +156,15 @@ class GequApi(context: Context) {
             // 隐藏: 0x0 像素 + invisible
             wv.setBackgroundColor(0x00000000)
 
-            val timeoutTask = mainHandler.postDelayed({
+            // postDelayed 返回 Boolean (表示是否成功 enqueue), 不是 Runnable.
+            // 保留 Runnable 引用以便 removeCallbacks / invokeOnCancellation 使用.
+            val timeoutRunnable = Runnable {
                 if (cont.isActive) {
                     wv.destroy()
                     cont.resumeWithException(IllegalStateException("WebView timeout ($url)"))
                 }
-            }, 10_000L)
+            }
+            mainHandler.postDelayed(timeoutRunnable, 10_000L)
 
             wv.webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, finishedURL: String) {
@@ -177,7 +180,7 @@ class GequApi(context: Context) {
                                 " w:window.appData&&window.appData.is_white_url});" +
                                 "}catch(e){return 'ERR:'+e.message;}})()"
                         ) { raw ->
-                                mainHandler.removeCallbacks(timeoutTask)
+                                mainHandler.removeCallbacks(timeoutRunnable)
                                 val safe = raw?.trim('"')?.replace("\\\"", "\"") ?: ""
                                 try {
                                     val obj = JSONObject(safe)
@@ -200,7 +203,7 @@ class GequApi(context: Context) {
             wv.loadUrl(url)
 
             cont.invokeOnCancellation {
-                mainHandler.removeCallbacks(timeoutTask)
+                mainHandler.removeCallbacks(timeoutRunnable)
                 wv.destroy()
             }
         }
