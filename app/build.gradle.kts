@@ -69,6 +69,7 @@ dependencies {
     // ---- Networking ----
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jsoup:jsoup:1.17.2")
+    implementation("com.google.code.gson:gson:2.10.1")  // prefs 序列化 SongMeta
 
     // ---- Media (播放) ----
     val media3 = "1.3.1"

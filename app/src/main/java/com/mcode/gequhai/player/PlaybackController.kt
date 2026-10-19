@@ -10,10 +10,15 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.MoreExecutors
 import com.mcode.gequhai.data.LrcEntry
+import com.mcode.gequhai.data.Prefs
 import com.mcode.gequhai.data.SongMeta
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * 播放控制单例.
@@ -21,10 +26,17 @@ import kotlinx.coroutines.flow.asStateFlow
  * - 底层用 Media3 MediaController 接到 PlaybackService (MediaSessionService)
  * - 维护播放队列 [queue] + 当前索引 [queueIndex]
  * - 通过 StateFlow 暴露给 Compose
+ * - 每次歌曲过渡 (onMediaItemTransition) 写入 Prefs.listened, 跨重启可见
  */
 object PlaybackController {
 
     private var controller: MediaController? = null
+
+    /** 应用上下文 (用于写入 DataStore). */
+    private var appContext: Context? = null
+
+    /** 切歌时写 DataStore 的协程作用域. */
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // 队列 + 当前索引
     private val _queue = MutableStateFlow<List<SongMeta>>(emptyList())
@@ -55,6 +67,7 @@ object PlaybackController {
 
     fun bind(context: Context) {
         if (controller != null) return
+        appContext = context.applicationContext
         val token = SessionToken(
             context.applicationContext,
             ComponentName(context.applicationContext, PlaybackService::class.java)
@@ -65,7 +78,18 @@ object PlaybackController {
             controller?.addListener(playerListener)
             // 如果服务侧已经有队列, 同步到 UI
             syncFromController()
+            // 如果当前已经在播, 也把"现在"作为历史
+            _current.value?.let { recordListened(it) }
         }, MoreExecutors.directExecutor())
+    }
+
+    /**
+     * 把一首已确认播放的歌曲记入历史 (应用上下文为准).
+     * 同一首歌 mp3Id 重复记录会去重并前置.
+     */
+    private fun recordListened(song: SongMeta) {
+        val ctx = appContext ?: return
+        ioScope.launch { Prefs.addListened(ctx, song) }
     }
 
     private fun syncFromController() {
@@ -202,8 +226,11 @@ object PlaybackController {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val c = controller ?: return
             _queueIndex.value = c.currentMediaItemIndex
-            _current.value = _queue.value.getOrNull(c.currentMediaItemIndex)
+            val now = _queue.value.getOrNull(c.currentMediaItemIndex)
+            _current.value = now
             _progressMs.value = 0
+            // 任何歌曲过渡都视为"我听过它" -> 写 Prefs, 跨重启可看
+            if (now != null) recordListened(now)
         }
         override fun onPlaybackStateChanged(playbackState: Int) {
             controller?.let { _durationMs.value = it.duration.coerceAtLeast(0) }

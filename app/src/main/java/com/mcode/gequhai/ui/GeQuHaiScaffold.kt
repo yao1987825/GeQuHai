@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Search
@@ -26,6 +27,7 @@ fun GeQuHaiApp() {
         TabItem("搜索",   Icons.Default.Search),
         TabItem("正在播放", Icons.Default.MusicNote),
         TabItem("队列",   Icons.Default.QueueMusic),
+        TabItem("收听",   Icons.Default.History),
         TabItem("下载",   Icons.Default.Download),
     )
 
@@ -57,7 +59,8 @@ fun GeQuHaiApp() {
                 0 -> SearchScreen(api = api) { /* 跳到正在播放 */ tab = 1 }
                 1 -> NowPlayingScreen()
                 2 -> QueueScreen(onPlaying = { tab = 1 })
-                3 -> DownloadsScreen()
+                3 -> HeardScreen()
+                4 -> DownloadsScreen()
             }
         }
     }
