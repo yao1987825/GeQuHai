@@ -20,13 +20,8 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.mcode.gequhai.data.GequApi
 import com.mcode.gequhai.data.SearchItem
-import com.mcode.gequhai.data.SongMeta
 import com.mcode.gequhai.player.PlaybackController
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -42,8 +37,6 @@ fun SearchScreen(
     var resolving by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
-    // 记录"当前正在后台 resolve 的搜索任务", 切换关键字时取消上一个
-    var backgroundJob by remember { mutableStateOf<Job?>(null) }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(12.dp))
@@ -90,34 +83,14 @@ fun SearchScreen(
                     item = item,
                     isResolving = resolving == item.hash,
                     onPlay = {
-                        // 1) 先 resolve 当前点击的 (同步)
-                        // 2) 起后台协程慢慢 resolve 整组, 完成后逐个 addMediaItem
-                        backgroundJob?.cancel()
+                        // 简单模式: 只 resolve + 播放当前点击的那一首.
+                        // 不再预入队所有搜索结果 (搜索"王力宏"有 1500+ 首, 全部 resolve 太慢).
+                        // 用户可以在队列 tab 单独点播其他歌.
                         resolving = item.hash
-                        val currentResults = results
-                        val clickedIndex = currentResults.indexOfFirst { it.hash == item.hash }
-                        val job = SupervisorJob()
-                        backgroundJob = job
                         scope.launch(Dispatchers.Main) {
                             try {
-                                val firstMeta = withContext(Dispatchers.IO) { api.resolve(item) }
-                                val metas = mutableListOf(firstMeta)
-                                // 起后台协程: 顺序 resolve 其他, 隔 300ms 一首避免被 WAF 拦
-                                val bgScope = CoroutineScope(Dispatchers.IO + job)
-                                bgScope.launch {
-                                    for (i in currentResults.indices) {
-                                        if (i == clickedIndex) continue
-                                        delay(300)
-                                        try {
-                                            val m = api.resolve(currentResults[i])
-                                            metas.add(m)
-                                            // 实时 addMediaItem, 队列边加载边播放
-                                            PlaybackController.appendToQueue(m)
-                                        } catch (_: Throwable) {}
-                                    }
-                                }
-                                // 整组入队 + 跳到点击的那首
-                                PlaybackController.playQueue(metas, 0)
+                                val meta = withContext(Dispatchers.IO) { api.resolve(item) }
+                                PlaybackController.play(meta)
                                 onPlaying()
                             } catch (e: Throwable) {
                                 error = e.message ?: "解析失败"

@@ -160,11 +160,18 @@ class GequApi(context: Context) {
      * 用隐藏 WebView 加载播放页, 等 plugin.js + crypto-js 全部执行完后
      * 读取 window.appData.mp3_url / mp3_url_a.
      *
+     * 实现: onPageFinished 后每 500ms 轮询 mp3_url 一次, 直到拿到或超时 (15s).
+     * 不用固定延迟, 因为 plugin.js + crypto-js 加载时间在 Android 9+ WebView 上可能
+     * 比 chrome-devtools-mcp 慢很多 (CDN 资源加载 + 签名计算), 600ms 不一定够.
+     *
      * 注意: WebView 必须在主线程创建与操作, 这里 suspendCancellableCoroutine 配合 Dispatchers.Main.
      */
     private suspend fun fetchMp3UrlViaWebView(url: String): String =
         suspendCancellableCoroutine { cont ->
             val mainHandler = Handler(Looper.getMainLooper())
+            val startUptime = android.os.SystemClock.uptimeMillis()
+            val deadlineMs = 15_000L
+            val pollIntervalMs = 500L
             val wv = WebView(appContext)
             wv.settings.javaScriptEnabled = true
             wv.settings.domStorageEnabled = true
@@ -172,48 +179,44 @@ class GequApi(context: Context) {
             // 隐藏: 0x0 像素 + invisible
             wv.setBackgroundColor(0x00000000)
 
-            // postDelayed 返回 Boolean (表示是否成功 enqueue), 不是 Runnable.
-            // 保留 Runnable 引用以便 removeCallbacks / invokeOnCancellation 使用.
             val timeoutRunnable = Runnable {
                 if (cont.isActive) {
                     wv.destroy()
-                    cont.resumeWithException(IllegalStateException("WebView timeout ($url)"))
+                    cont.resumeWithException(IllegalStateException("WebView timeout (${deadlineMs}ms) $url"))
                 }
             }
-            mainHandler.postDelayed(timeoutRunnable, 10_000L)
+            mainHandler.postDelayed(timeoutRunnable, deadlineMs)
+
+            // 轮询函数: 读 mp3_url, 拿到就 return, 没拿到就 postDelayed 后再试
+            fun poll() {
+                if (!cont.isActive) return
+                val elapsed = android.os.SystemClock.uptimeMillis() - startUptime
+                if (elapsed > deadlineMs) {
+                    mainHandler.removeCallbacks(timeoutRunnable)
+                    wv.destroy()
+                    cont.resumeWithException(IllegalStateException("mp3_url still empty after WebView load ($elapsed ms) $url"))
+                    return
+                }
+                wv.evaluateJavascript(
+                    "(function(){try{var d=window.appData;if(!d)return '';return d.mp3_url||d.mp3_url_a||''}catch(e){return 'ERR:'+e.message;}})()"
+                ) { raw ->
+                    if (!cont.isActive) return@evaluateJavascript
+                    val url = raw?.trim('"') ?: ""
+                    if (url.isNotBlank() && url != "null" && !url.startsWith("ERR:")) {
+                        mainHandler.removeCallbacks(timeoutRunnable)
+                        wv.destroy()
+                        cont.resume(url)
+                        return@evaluateJavascript
+                    }
+                    // 还没拿到, 继续轮询
+                    mainHandler.postDelayed({ poll() }, pollIntervalMs)
+                }
+            }
 
             wv.webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, finishedURL: String) {
-                    // plugin.js 通常在 DOMContentLoaded 后立刻调 /api/geturl,
-                    // onPageFinished 后基本就绪. 再等 600ms 让 mp3_url 落地.
-                    mainHandler.postDelayed({
-                        view.evaluateJavascript(
-                            "(function(){try{return JSON.stringify(" +
-                                "{u:window.appData&&window.appData.mp3_url," +
-                                " a:window.appData&&window.appData.mp3_url_a," +
-                                " t:window.appData&&window.appData.mp3_type," +
-                                " ut:window.appData&&window.appData.ut," +
-                                " w:window.appData&&window.appData.is_white_url});" +
-                                "}catch(e){return 'ERR:'+e.message;}})()"
-                        ) { raw ->
-                                mainHandler.removeCallbacks(timeoutRunnable)
-                                val safe = raw?.trim('"')?.replace("\\\"", "\"") ?: ""
-                                try {
-                                    val obj = JSONObject(safe)
-                                    val u = obj.optString("u").takeIf { it.isNotBlank() && it != "null" && it != "ERR:" }
-                                        ?: obj.optString("a").takeIf { it.isNotBlank() && it != "null" }
-                                    wv.destroy()
-                                    if (u.isNullOrBlank()) {
-                                        cont.resumeWithException(IllegalStateException("mp3_url still empty after WebView load"))
-                                    } else {
-                                        cont.resume(u)
-                                    }
-                                } catch (e: Throwable) {
-                                    wv.destroy()
-                                    cont.resumeWithException(e)
-                                }
-                            }
-                    }, 600L)
+                    // onPageFinished 后启动轮询, 不再固定等 600ms
+                    mainHandler.postDelayed({ poll() }, 300L)
                 }
             }
             wv.loadUrl(url)
