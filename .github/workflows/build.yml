@@ -31,8 +31,11 @@ jobs:
         with:
           # 与 build.gradle.kts 里 compileSdk / targetSdk 对齐
           android-version: 34
-          # 构建工具足够就行, 之后改大不影响
-          build-tools-version: 34.0.0
+          # 显式列包, 避免 v3 默认装已下架的 'tools' 包导致 "Failed to find package 'tools'"
+          packages: |
+            platform-tools
+            platforms;android-34
+            build-tools;34.0.0
 
       - name: Cache Gradle
         uses: actions/cache@v4
