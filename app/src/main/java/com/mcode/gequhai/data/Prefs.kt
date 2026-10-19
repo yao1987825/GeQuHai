@@ -15,55 +15,89 @@ import kotlinx.coroutines.flow.map
  * 应用偏好持久化 (DataStore Preferences).
  *
  * 当前字段:
- *  - listened: List<SongMeta>   收听历史 (按时间倒序, 去重, 上限 200 首)
+ *  - listened: List<SongMeta>     收听历史 (按时间倒序, 去重, 上限 200 首)
+ *  - favorites: Set<String>       "❤️ 标记" 集 (每首一个 mp3Id), 与列表解耦
  *
- * 序列化用 Gson, 单字段 JSONArray 字符串存到 Preferences key.
+ * 序列化用 Gson, 字符串存到 Preferences key.
  */
 private val Context.dataStore by preferencesDataStore(name = "gequhai_prefs")
 private val LISTENED_KEY = stringPreferencesKey("listened_songs")
+private val FAVORITES_KEY = stringPreferencesKey("favorite_ids")
 
 object Prefs {
 
     private val gson = Gson()
     private val songListType = object : TypeToken<List<SongMeta>>() {}.type
+    private val stringSetType = object : TypeToken<Set<String>>() {}.type
     private const val MAX_LISTENED = 200
 
-    /** 监听当前收听列表 (按最近在前顺序). */
-    fun listened(context: Context): Flow<List<SongMeta>> =
-        context.dataStore.data.map { prefs -> decode(prefs) }
+    // -------- listened (收听历史) --------
 
-    /** 在 storage 层强制添加一首到收听. 若已存在 (mp3Id 相同) 则移到最前. */
+    fun listened(context: Context): Flow<List<SongMeta>> =
+        context.dataStore.data.map { prefs -> decodeSongs(prefs) }
+
     suspend fun addListened(context: Context, song: SongMeta) {
         context.dataStore.edit { prefs ->
-            val current = decode(prefs)
+            val current = decodeSongs(prefs)
             val updated = (listOf(song) + current.filter { it.mp3Id != song.mp3Id })
                 .take(MAX_LISTENED)
             prefs[LISTENED_KEY] = gson.toJson(updated)
         }
     }
 
-    /** 从收听列表中删除一首. */
     suspend fun removeListened(context: Context, mp3Id: String) {
         context.dataStore.edit { prefs ->
-            val current = decode(prefs).filter { it.mp3Id != mp3Id }
+            val current = decodeSongs(prefs).filter { it.mp3Id != mp3Id }
             prefs[LISTENED_KEY] = gson.toJson(current)
         }
     }
 
-    /** 清空收听列表. */
     suspend fun clearListened(context: Context) {
         context.dataStore.edit { prefs -> prefs.remove(LISTENED_KEY) }
     }
 
-    /** 当前一次性快照 (首屏 / 调试用). */
     suspend fun listenedSnapshot(context: Context): List<SongMeta> =
         listened(context).first()
 
-    private fun decode(prefs: Preferences): List<SongMeta> {
+    // -------- favorites (❤️ 标记) --------
+
+    fun favorites(context: Context): Flow<Set<String>> =
+        context.dataStore.data.map { prefs -> decodeFavorites(prefs) }
+
+    /**
+     * 切换一首歌的 ❤️ 标记. 若未标记则标记并返回 true; 若已标记则移除并返回 false.
+     */
+    suspend fun toggleFavorite(context: Context, mp3Id: String): Boolean {
+        var nowFavorited = false
+        context.dataStore.edit { prefs ->
+            val current = decodeFavorites(prefs)
+            val updated = if (mp3Id in current) current - mp3Id else {
+                nowFavorited = true
+                current + mp3Id
+            }
+            prefs[FAVORITES_KEY] = gson.toJson(updated)
+        }
+        return nowFavorited
+    }
+
+    suspend fun isFavorite(context: Context, mp3Id: String): Boolean =
+        mp3Id in favorites(context).first()
+
+    // -------- 内部 --------
+
+    private fun decodeSongs(prefs: Preferences): List<SongMeta> {
         val raw = prefs[LISTENED_KEY] ?: return emptyList()
         if (raw.isBlank() || raw == "[]") return emptyList()
         return runCatching { gson.fromJson<List<SongMeta>>(raw, songListType) }
             .getOrDefault(emptyList())
+            .orEmpty()
+    }
+
+    private fun decodeFavorites(prefs: Preferences): Set<String> {
+        val raw = prefs[FAVORITES_KEY] ?: return emptySet()
+        if (raw.isBlank() || raw == "[]") return emptySet()
+        return runCatching { gson.fromJson<Set<String>>(raw, stringSetType) }
+            .getOrDefault(emptySet())
             .orEmpty()
     }
 }

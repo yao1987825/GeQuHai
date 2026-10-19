@@ -9,12 +9,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,14 +30,22 @@ import kotlinx.coroutines.launch
 
 /**
  * "收听"页: 我播放过的歌曲 (按最近在前), DataStore 持久化.
- * 点击 → 立即播放 (会再走一遍 resolve 拿 mp3_url).
- * 长按 → 不支持; 右侧删除按钮 → 从历史中移除.
+ *
+ * 操作:
+ *  - 整行点击 -> 重播
+ *  - ❤️     -> 收藏/取消收藏 (与收听列表解耦)
+ *  - ❌     -> 从收听历史中移除
+ *  - 顶部 全部/仅❤️ 切换过滤
  */
 @Composable
 fun HeardScreen() {
     val context = LocalContext.current
     val items by Prefs.listened(context).collectAsState(initial = emptyList())
+    val favorites by Prefs.favorites(context).collectAsState(initial = emptySet())
     val scope = rememberCoroutineScope()
+    var onlyFavorites by rememberSaveable { mutableStateOf(false) }
+
+    val filtered = if (onlyFavorites) items.filter { it.mp3Id in favorites } else items
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(12.dp))
@@ -58,13 +66,34 @@ fun HeardScreen() {
                 }
             }
         }
+        Spacer(Modifier.height(6.dp))
+        // 筛选: 全部 / 仅 ❤️
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = !onlyFavorites,
+                onClick = { onlyFavorites = false },
+                label = { Text("全部 ${items.size}") },
+            )
+            FilterChip(
+                selected = onlyFavorites,
+                onClick = { onlyFavorites = true },
+                label = { Text("仅 ❤️ ${favorites.size}") },
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.Favorite,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                },
+            )
+        }
         Spacer(Modifier.height(8.dp))
-        if (items.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        when {
+            items.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
-                        Icons.Default.MusicNote,
-                        contentDescription = null,
+                        Icons.Default.MusicNote, contentDescription = null,
                         modifier = Modifier.size(56.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
                     )
@@ -75,12 +104,22 @@ fun HeardScreen() {
                     )
                 }
             }
-        } else {
-            LazyColumn(Modifier.fillMaxSize()) {
-                items(items, key = { it.mp3Id }) { song ->
+            filtered.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    "已过滤: 你 ${items.size} 首里没有任何 ❤️ 标记",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            else -> LazyColumn(Modifier.fillMaxSize()) {
+                items(filtered, key = { it.mp3Id }) { song ->
+                    val isFav = song.mp3Id in favorites
                     HeardRow(
                         song = song,
+                        isFavorite = isFav,
                         onClick = { PlaybackController.play(song) },
+                        onToggleFavorite = {
+                            scope.launch { Prefs.toggleFavorite(context, song.mp3Id) }
+                        },
                         onRemove = { scope.launch { Prefs.removeListened(context, song.mp3Id) } },
                     )
                     HorizontalDivider()
@@ -93,13 +132,19 @@ fun HeardScreen() {
 @Composable
 private fun HeardRow(
     song: SongMeta,
+    isFavorite: Boolean,
     onClick: () -> Unit,
+    onToggleFavorite: () -> Unit,
     onRemove: () -> Unit,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
             .clickable { onClick() }
+            .background(
+                if (isFavorite) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                else androidx.compose.ui.graphics.Color.Transparent
+            )
             .padding(vertical = 10.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -136,11 +181,22 @@ private fun HeardRow(
                 overflow = TextOverflow.Ellipsis,
             )
         }
+        // ❤️ 切换
+        IconButton(onClick = onToggleFavorite, modifier = Modifier.size(40.dp)) {
+            Icon(
+                if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                contentDescription = if (isFavorite) "取消收藏" else "收藏",
+                tint = if (isFavorite)
+                    MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        // ❌ 从历史移除
         IconButton(onClick = onRemove, modifier = Modifier.size(40.dp)) {
             Icon(
                 Icons.Default.Close,
                 contentDescription = "从收听历史移除",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             )
         }
     }

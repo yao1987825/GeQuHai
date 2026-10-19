@@ -9,6 +9,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
@@ -31,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.mcode.gequhai.data.Downloader
 import com.mcode.gequhai.data.LrcParser
+import com.mcode.gequhai.data.Prefs
 import com.mcode.gequhai.player.PlaybackController
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -49,6 +52,7 @@ fun NowPlayingScreen(
     val queueIndex by PlaybackController.queueIndex.collectAsState()
     val lrc by PlaybackController.lrc.collectAsState()
     val currentLrcIndex by PlaybackController.currentLrcIndex.collectAsState()
+    val favorites by Prefs.favorites(context).collectAsState(initial = emptySet())
     val scope = rememberCoroutineScope()
 
     var isDragging by remember { mutableStateOf(false) }
@@ -235,6 +239,30 @@ fun NowPlayingScreen(
                 modifier = Modifier.size(48.dp)
             ) {
                 Icon(Icons.Default.Download, contentDescription = "下载")
+            }
+            // 收藏 ❤️: 单击切换. 已收藏 -> 高亮红心; 未收藏 -> 空心
+            FilledTonalIconButton(
+                onClick = {
+                    val appCtx = context.applicationContext
+                    val mp3Id = s.mp3Id
+                    if (mp3Id.isNotBlank()) {
+                        scope.launch { Prefs.toggleFavorite(appCtx, mp3Id) }
+                    }
+                },
+                modifier = Modifier.size(48.dp),
+                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                    containerColor = if (s.mp3Id in favorites)
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                ),
+            ) {
+                Icon(
+                    if (s.mp3Id in favorites) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                    contentDescription = if (s.mp3Id in favorites) "取消收藏" else "收藏",
+                    tint = if (s.mp3Id in favorites)
+                        MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
