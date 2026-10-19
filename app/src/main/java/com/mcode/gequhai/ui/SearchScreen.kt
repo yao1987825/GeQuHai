@@ -54,7 +54,6 @@ fun SearchScreen(
                         loading = true
                         results = emptyList()
                         error = null
-                        backgroundJob?.cancel()
                         scope.launch {
                             try {
                                 val r = withContext(Dispatchers.IO) {
