@@ -188,18 +188,18 @@ class GequApi(context: Context) {
         for (attempt in 1..4) {
             val req = Request.Builder().url(url).build()
             try {
-                val body = http.newCall(req).execute().use { r ->
+                val body: String = http.newCall(req).execute().use { r ->
                     when {
                         r.isSuccessful -> r.body?.string().orEmpty()
                         r.code == 403 || r.code in 500..599 -> {
-                            // 不抛, 让外层继续重试
-                            null
+                            // 不抛, 让外层继续重试 (空串标记"待重试")
+                            ""
                         }
                         else -> throw IllegalStateException("HTTP ${r.code} $url")
                     }
                 }
                 if (body.isNotBlank()) return@withContext body
-                lastErr = IllegalStateException("empty body")
+                lastErr = IllegalStateException("empty body or retryable HTTP code")
             } catch (e: Throwable) {
                 if (e is IllegalStateException && e.message?.startsWith("HTTP ") == true) {
                     // 4xx (我们自己 throw 的), 直接抛给上层
