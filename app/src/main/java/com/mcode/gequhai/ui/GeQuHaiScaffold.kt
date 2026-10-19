@@ -12,12 +12,14 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import com.mcode.gequhai.data.GequApi
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GeQuHaiApp() {
-    val api = remember { GequApi() }
+    val context = LocalContext.current
+    val api = remember { GequApi(context.applicationContext) }
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf(
         TabItem("搜索", Icons.Default.Search),

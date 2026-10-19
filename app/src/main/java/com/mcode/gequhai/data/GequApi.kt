@@ -1,6 +1,12 @@
 package com.mcode.gequhai.data
 
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -8,6 +14,8 @@ import org.json.JSONObject
 import org.jsoup.Jsoup
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * m.gequba.com 抓取 API
@@ -17,11 +25,17 @@ import java.util.concurrent.TimeUnit
  *   resolve(item)          -> SongMeta (含 mp3_url)
  *   download(song, file)   -> File (流式下载)
  *
- * 链路完全用 OkHttp + Jsoup, 不依赖 JS 引擎.
- * 对应 chrome-devtools-mcp 实测结论: appData.mp3_url 字段直接是完整 mp3 URL,
- * 无需走 /api/geturl 签名 + AES 解密链路.
+ * 链路:
+ *   搜索  :  OkHttp + Jsoup 解析 HTML
+ *   resolve:
+ *     1) OkHttp 抓播放页 HTML, 正则 + \uXXXX 反转义解析出 window.appData
+ *     2) 若 appData.mp3_url 缺失 (服务器端 HTML 静态版不带此字段, 是 plugin.js
+ *        运行时通过 /api/geturl + iLingKu_Decode 注入的) 则 fallback 到 WebView
+ *        加载播放页, 等 JS 跑完后从 window.appData.mp3_url 读取
  */
-class GequApi {
+class GequApi(context: Context) {
+
+    private val appContext: Context = context.applicationContext
 
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -35,13 +49,11 @@ class GequApi {
                 .header("User-Agent",      UA)
                 .header("Accept",          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
                 .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-                // Accept-Encoding 让 OkHttp 自动加 + 自动解压 (不要再手动 header 避免重复)
                 .header("Sec-Fetch-Dest",  "document")
                 .header("Sec-Fetch-Mode",  "navigate")
                 .header("Sec-Fetch-Site",  "same-origin")
                 .header("Sec-Fetch-User",  "?1")
                 .header("Upgrade-Insecure-Requests", "1")
-                // Referer 按 host 自动匹配: 搜索页和播放页都用主域
                 .header("Referer", if (chain.request().url.host.endsWith("gequba.com")) BASE + "/" else chain.request().url.toString())
                 .build()
             chain.proceed(req)
@@ -69,20 +81,25 @@ class GequApi {
         all.distinctBy { it.hash }
     }
 
-    /** 解析播放页: 从 window.appData JSON.parse('...') 抓 mp3_url 等 */
+    /**
+     * 解析播放页, 拿到完整 SongMeta (含 mp3_url).
+     *
+     * 流程:
+     *   1) OkHttp 抓 HTML, 解析 window.appData JSON.parse('\u0022...') -> 静态字段
+     *   2) 若 mp3_url 字段为空 (服务端 HTML 静态版本不带此字段, plugin.js 才会注入)
+     *      则用 WebView 加载播放页, 等 JS 跑完后从 window.appData.mp3_url 读取
+     */
     suspend fun resolve(item: SearchItem): SongMeta = withContext(Dispatchers.IO) {
         val html = get(item.detailUrl)
         val regex = Regex("""window\.appData\s*=\s*JSON\.parse\(\s*'([\s\S]*?)'\s*\)""")
         val raw = regex.find(html)?.groupValues?.get(1)
             ?: error("appData not found at ${item.detailUrl}")
         // HTML 里这一行是 window.appData = JSON.parse('\u0022web_code\u0022:...')
-        // \u0022 是 JS 字符串里的 " 转义, 必须先反转义为字面字符,
-        // 否则 JSONObject 看到 { 后紧跟 \, 会报 "Expected property name or '}'"
+        // \u0022 是 JS 字符串里的 " 转义, 必须先反转义为字面字符
         val jsonStr = unescapeUnicode(raw)
         val obj = JSONObject(jsonStr)
-        val mp3Url = obj.optString("mp3_url")
-        if (mp3Url.isBlank()) error("mp3_url empty (web_code=${obj.optString("web_code")})")
-        SongMeta(
+        val staticUrl = obj.optString("mp3_url")
+        val base = SongMeta(
             mp3Id     = obj.optString("mp3_id", item.hash),
             playId    = obj.optString("play_id"),
             title     = obj.optString("mp3_title", item.title),
@@ -90,21 +107,24 @@ class GequApi {
             cover     = obj.optString("mp3_cover"),
             duration  = obj.optString("mp3_duration"),
             mp3Type   = obj.optInt("mp3_type"),
-            mp3Url    = mp3Url,
+            mp3Url    = staticUrl,
         )
+        if (staticUrl.isNotBlank()) return@withContext base
+
+        // Fallback: WebView 加载, 等 plugin.js 跑完拿到 mp3_url
+        val realUrl = withContext(Dispatchers.Main) { fetchMp3UrlViaWebView(item.detailUrl) }
+        base.copy(mp3Url = realUrl)
     }
 
     // ---------------- 内部 ----------------
 
     private fun get(url: String): String {
-        // header 全部由 OkHttp 拦截器统一补. 这里只放 URL.
         var lastErr: Throwable? = null
         for (attempt in 1..3) {
             val req = Request.Builder().url(url).build()
             try {
                 http.newCall(req).execute().use { r ->
                     if (r.isSuccessful) return r.body?.string() ?: error("empty body")
-                    // 403/503 退避重试 (反爬偶发)
                     if (r.code == 403 || r.code in 500..599) {
                         lastErr = error("HTTP ${r.code} $url (attempt $attempt/3)")
                         Thread.sleep(1000L * attempt)
@@ -119,6 +139,71 @@ class GequApi {
         }
         throw lastErr ?: error("get failed: $url")
     }
+
+    /**
+     * 用隐藏 WebView 加载播放页, 等 plugin.js + crypto-js 全部执行完后
+     * 读取 window.appData.mp3_url / mp3_url_a.
+     *
+     * 注意: WebView 必须在主线程创建与操作, 这里 suspendCancellableCoroutine 配合 Dispatchers.Main.
+     */
+    private suspend fun fetchMp3UrlViaWebView(url: String): String =
+        suspendCancellableCoroutine { cont ->
+            val mainHandler = Handler(Looper.getMainLooper())
+            val wv = WebView(appContext)
+            wv.settings.javaScriptEnabled = true
+            wv.settings.domStorageEnabled = true
+            wv.settings.userAgentString = UA
+            // 隐藏: 0x0 像素 + invisible
+            wv.setBackgroundColor(0x00000000)
+
+            val timeoutTask = mainHandler.postDelayed({
+                if (cont.isActive) {
+                    wv.destroy()
+                    cont.resumeWithException(IllegalStateException("WebView timeout ($url)"))
+                }
+            }, 10_000L)
+
+            wv.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, finishedURL: String) {
+                    // plugin.js 通常在 DOMContentLoaded 后立刻调 /api/geturl,
+                    // onPageFinished 后基本就绪. 再等 600ms 让 mp3_url 落地.
+                    mainHandler.postDelayed({
+                        view.evaluateJavascript(
+                            "(function(){try{return JSON.stringify(" +
+                                "{u:window.appData&&window.appData.mp3_url," +
+                                " a:window.appData&&window.appData.mp3_url_a," +
+                                " t:window.appData&&window.appData.mp3_type," +
+                                " ut:window.appData&&window.appData.ut," +
+                                " w:window.appData&&window.appData.is_white_url});" +
+                                "}catch(e){return 'ERR:'+e.message;}})()"
+                        ) { raw ->
+                                mainHandler.removeCallbacks(timeoutTask)
+                                val safe = raw?.trim('"')?.replace("\\\"", "\"") ?: ""
+                                try {
+                                    val obj = JSONObject(safe)
+                                    val u = obj.optString("u").takeIf { it.isNotBlank() && it != "null" && it != "ERR:" }
+                                        ?: obj.optString("a").takeIf { it.isNotBlank() && it != "null" }
+                                    wv.destroy()
+                                    if (u.isNullOrBlank()) {
+                                        cont.resumeWithException(IllegalStateException("mp3_url still empty after WebView load"))
+                                    } else {
+                                        cont.resume(u)
+                                    }
+                                } catch (e: Throwable) {
+                                    wv.destroy()
+                                    cont.resumeWithException(e)
+                                }
+                            }
+                    }, 600L)
+                }
+            }
+            wv.loadUrl(url)
+
+            cont.invokeOnCancellation {
+                mainHandler.removeCallbacks(timeoutTask)
+                wv.destroy()
+            }
+        }
 
     private fun parseSearchHtml(html: String): List<SearchItem> {
         val doc = Jsoup.parse(html)
@@ -149,12 +234,6 @@ class GequApi {
     /**
      * 把字符串里的 \uXXXX 反转义成真实字符 (BMP 范围).
      * 处理 gequba.com 播放页 HTML 里 JSON.parse('\u0022...') 这种转义后的 JSON 串.
-     * 支持:
-     *   \u0022 -> "
-     *   \u7231 -> "爱"
-     *   \\     -> \     (转义的反斜杠)
-     *   \"     -> "     (转义的引号)
-     *   \n / \t / \r     原样保留
      */
     private fun unescapeUnicode(s: String): String {
         val out = StringBuilder(s.length)
