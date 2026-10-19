@@ -103,14 +103,14 @@ class GequApi {
                     // 403/503 退避重试 (反爬偶发)
                     if (r.code == 403 || r.code in 500..599) {
                         lastErr = error("HTTP ${r.code} $url (attempt $attempt/3)")
-                        kotlinx.coroutines.delay(1000L * attempt)
+                        Thread.sleep(1000L * attempt)
                         return@use
                     }
                     error("HTTP ${r.code} $url")
                 }
             } catch (e: Throwable) {
                 lastErr = e
-                kotlinx.coroutines.delay(500L * attempt)
+                Thread.sleep(500L * attempt)
             }
         }
         throw lastErr ?: error("get failed: $url")
