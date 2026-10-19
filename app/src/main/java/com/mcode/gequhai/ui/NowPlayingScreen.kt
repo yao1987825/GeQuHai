@@ -13,6 +13,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -29,6 +30,7 @@ import kotlinx.coroutines.launch
 fun NowPlayingScreen(
     onDownloaded: (String) -> Unit = {},
 ) {
+    val context = LocalContext.current
     val song by PlaybackController.current.collectAsState()
     val isPlaying by PlaybackController.isPlaying.collectAsState()
     val progressMs by PlaybackController.progressMs.collectAsState()
@@ -126,10 +128,11 @@ fun NowPlayingScreen(
             Spacer(Modifier.width(24.dp))
             FilledTonalIconButton(
                 onClick = {
+                    val appCtx = context.applicationContext
                     scope.launch {
                         try {
                             val f = Downloader.download(
-                                context = androidx.compose.ui.platform.LocalContext.current.applicationContext as android.app.Application,
+                                context = appCtx,
                                 song = s,
                             )
                             onDownloaded(f.absolutePath)
