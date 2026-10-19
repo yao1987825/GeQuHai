@@ -1,0 +1,66 @@
+# Audio samples
+*.mp3
+*.m4a
+*.aac
+*.flac
+
+# Process artifacts (don't commit probe / inspect files)
+gequba-*
+gequhai-*
+inspect*
+play.html
+play.js
+test1.html
+probe-*.js
+verify-site.js
+
+# Build artifacts
+GeQuHai/build/
+GeQuHai/.gradle/
+GeQuHai/app/build/
+GeQuHai/local.properties
+*.apk
+*.aab
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# === from GeQuHai/.gitignore ===
+# Build artifacts
+build/
+.gradle/
+local.properties
+
+# Android
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+bin/
+gen/
+out/
+release/
+
+# IntelliJ / Android Studio
+.idea/
+*.iml
+*.iws
+*.ipr
+captures/
+.externalNativeBuild/
+.cxx/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keystore (keep template, drop real)
+*.jks
+*.keystore
+!debug.keystore

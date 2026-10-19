@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">歌曲海</string>
+    <string name="search_hint">搜索歌名 / 歌手</string>
+    <string name="tab_search">搜索</string>
+    <string name="tab_downloads">下载</string>
+    <string name="tab_playing">正在播放</string>
+    <string name="action_play">播放</string>
+    <string name="action_pause">暂停</string>
+    <string name="action_download">下载</string>
+    <string name="action_downloaded">已下载</string>
+    <string name="state_idle">空闲</string>
+    <string name="state_searching">搜索中…</string>
+    <string name="state_resolving">解析播放链接…</string>
+    <string name="state_playing">播放中</string>
+    <string name="state_paused">已暂停</string>
+    <string name="state_downloading">下载中</string>
+    <string name="state_done">完成</string>
+    <string name="state_failed">失败</string>
+    <string name="permission_notification_rationale">需要通知权限以显示播放/下载进度</string>
+</resources>
